@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { ADMIN_PASSWORD, ADMIN_SESSION_COOKIE } from "@/lib/auth";
 
