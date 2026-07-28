@@ -79,35 +79,64 @@ export default function GeneratorPanel({ credits, onCreditsUpdate }: Props) {
     setResult(null);
     startProgress();
 
-    try {
-      const fd = new FormData();
-      fd.append("prompt", prompt);
-      fd.append("type", type);
-      if (type === "edit" && referenceFile) fd.append("image", referenceFile);
+    // Retry logic: up to 3 attempts for network/timeout errors
+    const MAX_ATTEMPTS = 3;
+    let lastError = "";
 
-      const res  = await fetch("/api/generate", { method: "POST", body: fd });
-      stopProgress();
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const fd = new FormData();
+        fd.append("prompt", prompt);
+        fd.append("type", type);
+        if (type === "edit" && referenceFile) fd.append("image", referenceFile);
 
-      const data = await res.json() as { imageUrl?: string; credits?: number; error?: string };
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 115_000); // 115s client timeout
 
-      if (!res.ok || data.error) {
-        setError(data.error || "Erro ao gerar imagem. Tente novamente.");
-        return;
+        const res = await fetch("/api/generate", {
+          method: "POST",
+          body: fd,
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        stopProgress();
+
+        const data = await res.json() as { imageUrl?: string; credits?: number; error?: string };
+
+        if (!res.ok || data.error) {
+          lastError = data.error || "Erro ao gerar imagem. Tente novamente.";
+          // Don't retry on application errors (credits, auth, etc.)
+          break;
+        }
+
+        setResult(data.imageUrl!);
+        onCreditsUpdate(data.credits!);
+        return; // success — exit loop
+      } catch (e) {
+        stopProgress();
+        const msg = e instanceof Error ? e.message : String(e);
+        const isNetwork = msg.includes("fetch") || msg.includes("network") ||
+                          msg.toLowerCase().includes("failed") || msg.includes("abort") ||
+                          msg.includes("timeout") || msg.includes("Load failed");
+
+        if (isNetwork && attempt < MAX_ATTEMPTS) {
+          // Retry after a short pause — restart progress bar
+          lastError = `Tentativa ${attempt} falhou, tentando novamente...`;
+          setError(lastError);
+          await new Promise(r => setTimeout(r, 1500));
+          startProgress();
+          continue;
+        }
+
+        lastError = isNetwork
+          ? "Erro de conexão. Verifique sua internet e tente novamente."
+          : "Erro inesperado. Tente novamente.";
+        break;
       }
-
-      setResult(data.imageUrl!);
-      onCreditsUpdate(data.credits!);
-    } catch (e) {
-      stopProgress();
-      const msg = e instanceof Error ? e.message : String(e);
-      if (msg.includes("fetch") || msg.includes("network") || msg.toLowerCase().includes("failed")) {
-        setError("Erro de conexão. A geração pode demorar até 60s — verifique sua internet e tente novamente.");
-      } else {
-        setError("Erro inesperado. Tente novamente.");
-      }
-    } finally {
-      setGenerating(false);
     }
+
+    setError(lastError);
+    setGenerating(false);
   };
 
   const handleDownload = () => {
