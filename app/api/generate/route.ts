@@ -198,7 +198,7 @@ async function generateWithDoubao(opts: {
   const body = {
     model: "doubao-seedream-5-0-260128",
     prompt: fullPrompt,
-    size: type === "banner" ? "1280*720" : "1024*1024",
+    size: type === "banner" ? "3k" : "2k",
     output_format: "png",
     watermark: false,
   };
