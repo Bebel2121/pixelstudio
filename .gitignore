@@ -30,12 +30,12 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files
+# env files — .env.production goes to GitHub so Netlify build can use it
 !.env.example
 !.env.netlify
+!.env.production
 .env
 .env.local
-.env.production
 
 # vercel
 .vercel
