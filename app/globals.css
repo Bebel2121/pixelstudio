@@ -1,0 +1,174 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --bg: #050505;
+  --surface: #0a0a0a;
+  --card: #0d0d0d;
+  --card-hover: #111111;
+  --text: #FFFFFF;
+  --text-muted: #A0A0A0;
+  --text-dim: #666666;
+  --cyan: #00D4FF;
+  --green: #00FF88;
+  --glow: rgba(0, 212, 255, 0.4);
+  --border: rgba(255, 255, 255, 0.08);
+  --border-hover: rgba(0, 212, 255, 0.5);
+  --gradient: linear-gradient(135deg, #00D4FF 0%, #00FF88 100%);
+
+  --background: oklch(0.05 0 0);
+  --foreground: oklch(1 0 0);
+  --card-bg: oklch(0.08 0 0);
+  --card-foreground: oklch(1 0 0);
+  --popover: oklch(0.08 0 0);
+  --popover-foreground: oklch(1 0 0);
+  --primary: oklch(0.8 0.15 200);
+  --primary-foreground: oklch(0.05 0 0);
+  --secondary: oklch(0.12 0 0);
+  --secondary-foreground: oklch(1 0 0);
+  --muted: oklch(0.1 0 0);
+  --muted-foreground: oklch(0.6 0 0);
+  --accent: oklch(0.12 0 0);
+  --accent-foreground: oklch(1 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border-color: rgba(255,255,255,0.08);
+  --input: oklch(0.12 0 0);
+  --ring: oklch(0.7 0.15 200);
+  --radius: 0.75rem;
+}
+
+* {
+  box-sizing: border-box;
+  border-color: var(--border);
+}
+
+html, body {
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.gradient-text {
+  background: var(--gradient);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.glow-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  transition: border-color 300ms ease, box-shadow 300ms ease;
+}
+
+.glow-card:hover {
+  border-color: var(--border-hover);
+  box-shadow: 0 20px 60px rgba(0, 212, 255, 0.15);
+}
+
+.btn-primary {
+  background: var(--gradient);
+  color: #000;
+  border-radius: 100px;
+  font-weight: 700;
+  transition: opacity 150ms ease, transform 150ms ease;
+}
+
+.btn-primary:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+.btn-primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn-secondary {
+  background: transparent;
+  color: var(--cyan);
+  border: 1px solid rgba(0, 212, 255, 0.3);
+  border-radius: 100px;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+
+.btn-secondary:hover {
+  border-color: var(--cyan);
+  background: rgba(0, 212, 255, 0.05);
+}
+
+input, textarea {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+  outline: none;
+}
+
+input:focus, textarea:focus {
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.1);
+}
+
+input::placeholder, textarea::placeholder {
+  color: var(--text-dim);
+}
+
+select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+  outline: none;
+}
+
+select:focus {
+  border-color: var(--cyan);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--surface); }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(0,212,255,0.4); }
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 20px rgba(0,212,255,0.3); }
+  50% { box-shadow: 0 0 40px rgba(0,212,255,0.6), 0 0 60px rgba(0,255,136,0.2); }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.4s ease forwards;
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.shimmer {
+  background: linear-gradient(90deg, var(--card) 25%, rgba(0,212,255,0.08) 50%, var(--card) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
