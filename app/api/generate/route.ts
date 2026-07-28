@@ -4,8 +4,7 @@ import { users, generations } from "@/db/schemas/users";
 import { getSessionUser, generateId } from "@/lib/auth";
 import { eq, sql } from "drizzle-orm";
 
-export const maxDuration = 120;
-export const dynamic = "force-dynamic";
+export const maxDuration = 120; // 2 minutes — needed for AI image generation
 
 const CREDITS_PER_IMAGE = 10;
 
@@ -18,16 +17,6 @@ const TYPE_PREFIX: Record<string, string> = {
 };
 
 export async function POST(req: NextRequest) {
-  // Validate required env vars at runtime — fail fast with clear message
-  const REACTUS_BASE_URL = process.env.REACTUS_BASE_URL;
-  const API_KEY          = process.env.BTY_LLM_SERVER_API_KEY;
-  const PROJECT_ID       = process.env.HAPPYSEEDS_PROJECT_ID;
-
-  if (!REACTUS_BASE_URL || !API_KEY || !PROJECT_ID) {
-    console.error("[generate] Missing env vars:", { REACTUS_BASE_URL: !!REACTUS_BASE_URL, API_KEY: !!API_KEY, PROJECT_ID: !!PROJECT_ID });
-    return NextResponse.json({ error: "Servidor mal configurado. Contate o administrador." }, { status: 503 });
-  }
-
   const user = await getSessionUser();
   if (!user) {
     return NextResponse.json({ error: "Faça login para continuar" }, { status: 401 });
@@ -43,120 +32,91 @@ export async function POST(req: NextRequest) {
   let type = "generate";
   let referenceB64: string | null = null;
 
-  try {
-    const contentType = req.headers.get("content-type") ?? "";
-    if (contentType.includes("multipart/form-data")) {
-      const fd = await req.formData();
-      prompt = (fd.get("prompt") as string) ?? "";
-      type   = (fd.get("type")   as string) ?? "generate";
-      const imgFile = fd.get("image") as File | null;
-      if (imgFile && type === "edit") {
-        const buf   = await imgFile.arrayBuffer();
-        const bytes = new Uint8Array(buf);
-        let bin = "";
-        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-        referenceB64 = btoa(bin).replace(/\s/g, "");
-      }
-    } else {
-      const body = await req.json() as { prompt?: string; type?: string };
-      prompt = body.prompt ?? "";
-      type   = body.type   ?? "generate";
+  const contentType = req.headers.get("content-type") ?? "";
+  if (contentType.includes("multipart/form-data")) {
+    const fd = await req.formData();
+    prompt = (fd.get("prompt") as string) ?? "";
+    type   = (fd.get("type")   as string) ?? "generate";
+    const imgFile = fd.get("image") as File | null;
+    if (imgFile && type === "edit") {
+      const buf   = await imgFile.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let bin = "";
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      referenceB64 = btoa(bin).replace(/\s/g, "");
     }
-  } catch (e) {
-    return NextResponse.json({ error: "Erro ao processar requisição." }, { status: 400 });
+  } else {
+    const body = await req.json() as { prompt?: string; type?: string };
+    prompt = body.prompt ?? "";
+    type   = body.type   ?? "generate";
   }
 
   if (!prompt.trim()) {
     return NextResponse.json({ error: "Descreva o que deseja gerar" }, { status: 400 });
   }
 
-  // Sanitize type
-  if (!["generate","edit","profile","banner","group"].includes(type)) type = "generate";
-
   const generationId = generateId();
 
   // Deduct credits upfront
-  try {
-    await db.update(users)
-      .set({ credits: sql`${users.credits} - ${CREDITS_PER_IMAGE}`, updatedAt: new Date() })
-      .where(eq(users.id, user.id));
-  } catch (e) {
-    console.error("[generate] Failed to deduct credits:", e);
-    return NextResponse.json({ error: "Erro ao processar créditos. Tente novamente." }, { status: 500 });
-  }
+  await db.update(users)
+    .set({ credits: sql`${users.credits} - ${CREDITS_PER_IMAGE}`, updatedAt: new Date() })
+    .where(eq(users.id, user.id));
 
-  try {
-    await db.insert(generations).values({
-      id: generationId,
-      userId: user.id,
-      prompt,
-      type,
-      status: "pending",
-      creditsUsed: CREDITS_PER_IMAGE,
-    });
-  } catch (e) {
-    // Non-fatal — don't block generation if history insert fails
-    console.warn("[generate] Failed to insert generation record:", e);
-  }
+  await db.insert(generations).values({
+    id: generationId,
+    userId: user.id,
+    prompt,
+    type,
+    status: "pending",
+    creditsUsed: CREDITS_PER_IMAGE,
+  });
+
+  const REACTUS_BASE_URL = process.env.REACTUS_BASE_URL!;
+  const API_KEY          = process.env.BTY_LLM_SERVER_API_KEY!;
+  const PROJECT_ID       = process.env.HAPPYSEEDS_PROJECT_ID!;
 
   try {
     const fullPrompt = (TYPE_PREFIX[type] ?? "") + prompt;
     const imageUrl   = await generateImage({
-      fullPrompt, type, referenceB64,
-      REACTUS_BASE_URL, API_KEY, PROJECT_ID,
+      fullPrompt,
+      type,
+      referenceB64,
+      REACTUS_BASE_URL,
+      API_KEY,
+      PROJECT_ID,
     });
 
-    // Update generation record
-    try {
-      await db.update(generations)
-        .set({ imageUrl, status: "completed" })
-        .where(eq(generations.id, generationId));
-    } catch (e) {
-      console.warn("[generate] Failed to update generation record:", e);
-    }
+    await db.update(generations)
+      .set({ imageUrl, status: "completed" })
+      .where(eq(generations.id, generationId));
 
-    // Get updated credits
-    let newCredits = user.credits - CREDITS_PER_IMAGE;
-    try {
-      const [updated] = await db
-        .select({ credits: users.credits })
-        .from(users)
-        .where(eq(users.id, user.id))
-        .limit(1);
-      if (updated) newCredits = updated.credits;
-    } catch (e) {
-      console.warn("[generate] Failed to fetch updated credits:", e);
-    }
+    const [updated] = await db
+      .select({ credits: users.credits })
+      .from(users)
+      .where(eq(users.id, user.id))
+      .limit(1);
 
-    return NextResponse.json({ success: true, imageUrl, credits: newCredits });
-
+    return NextResponse.json({
+      success: true,
+      imageUrl,
+      credits: updated?.credits ?? user.credits - CREDITS_PER_IMAGE,
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error("[generate] Generation failed:", msg);
+    console.error("[generate] error:", msg);
 
-    // Refund credits
-    try {
-      await db.update(users)
-        .set({ credits: sql`${users.credits} + ${CREDITS_PER_IMAGE}`, updatedAt: new Date() })
-        .where(eq(users.id, user.id));
-    } catch (refundErr) {
-      console.error("[generate] CRITICAL: Failed to refund credits:", refundErr);
-    }
+    // Refund
+    await db.update(users)
+      .set({ credits: sql`${users.credits} + ${CREDITS_PER_IMAGE}`, updatedAt: new Date() })
+      .where(eq(users.id, user.id));
+    await db.update(generations)
+      .set({ status: "failed" })
+      .where(eq(generations.id, generationId));
 
-    try {
-      await db.update(generations)
-        .set({ status: "failed" })
-        .where(eq(generations.id, generationId));
-    } catch {}
-
-    // Return user-friendly error based on failure type
-    if (msg.includes("SSE HTTP 4") || msg.includes("Access Denied")) {
-      return NextResponse.json({ error: "Serviço de IA temporariamente indisponível. Créditos devolvidos. Tente novamente em instantes." }, { status: 503 });
-    }
-    if (msg.includes("abort") || msg.includes("timeout") || msg.includes("110")) {
-      return NextResponse.json({ error: "A geração demorou demais. Créditos devolvidos. Tente um prompt mais simples." }, { status: 504 });
-    }
-    return NextResponse.json({ error: "Erro ao gerar imagem. Créditos devolvidos. Tente novamente." }, { status: 500 });
+    return NextResponse.json(
+      { error: "Erro ao gerar imagem. Créditos estornados. Tente novamente." },
+      { status: 500 }
+    );
   }
 }
 
@@ -175,30 +135,32 @@ async function generateImage(opts: {
   if (type === "edit" && referenceB64) {
     return generateWithGPTEdit({ fullPrompt, referenceB64, REACTUS_BASE_URL, API_KEY, PROJECT_ID });
   }
-
-  // Primary: Doubao (~20s, returns URL)
+  // Use Doubao as primary (fast, ~20s) — GPT Image as fallback
   try {
     return await generateWithDoubao({ fullPrompt, type, REACTUS_BASE_URL, API_KEY, PROJECT_ID });
   } catch (e) {
     console.warn("[generate] Doubao failed, trying GPT Image:", e instanceof Error ? e.message : e);
+    return generateWithGPTGen({ fullPrompt, type, REACTUS_BASE_URL, API_KEY, PROJECT_ID });
   }
-
-  // Fallback: GPT Image 2
-  return generateWithGPTGen({ fullPrompt, type, REACTUS_BASE_URL, API_KEY, PROJECT_ID });
 }
 
-// ─── Doubao Seedream (fast ~20s, returns URL) ─────────────────────────────────
+// ─── Doubao Seedream (primary — fast, returns URL) ────────────────────────────
 
 async function generateWithDoubao(opts: {
-  fullPrompt: string; type: string;
-  REACTUS_BASE_URL: string; API_KEY: string; PROJECT_ID: string;
+  fullPrompt: string;
+  type: string;
+  REACTUS_BASE_URL: string;
+  API_KEY: string;
+  PROJECT_ID: string;
 }): Promise<string> {
   const { fullPrompt, type, REACTUS_BASE_URL, API_KEY, PROJECT_ID } = opts;
+
+  const size = type === "banner" ? "1280*720" : "1024*1024";
 
   const body = {
     model: "doubao-seedream-5-0-260128",
     prompt: fullPrompt,
-    size: type === "banner" ? "3k" : "2k",
+    size,
     output_format: "png",
     watermark: false,
   };
@@ -215,28 +177,35 @@ async function generateWithDoubao(opts: {
   });
 
   const provider = parseSSE(sseText);
-  const items = provider.data as Array<{ url?: string; b64_json?: string }> | undefined;
-  const item = items?.[0];
-  if (!item) throw new Error("Doubao: no data item");
+  const item = (provider.data as Array<{ url?: string; b64_json?: string }>)?.[0];
+  if (!item) throw new Error("Doubao: no data item in response");
 
-  if (item.url)      return persistURL(item.url, PROJECT_ID, REACTUS_BASE_URL, API_KEY);
-  if (item.b64_json) return persistB64(item.b64_json, PROJECT_ID, REACTUS_BASE_URL, API_KEY);
+  if (item.url) {
+    return persistURL(item.url, PROJECT_ID, REACTUS_BASE_URL, API_KEY);
+  }
+  if (item.b64_json) {
+    return persistB64(item.b64_json, PROJECT_ID, REACTUS_BASE_URL, API_KEY);
+  }
   throw new Error("Doubao: no url or b64_json");
 }
 
-// ─── GPT Image 2 generate ─────────────────────────────────────────────────────
+// ─── GPT Image 2 generate (fallback) ─────────────────────────────────────────
 
 async function generateWithGPTGen(opts: {
-  fullPrompt: string; type: string;
-  REACTUS_BASE_URL: string; API_KEY: string; PROJECT_ID: string;
+  fullPrompt: string;
+  type: string;
+  REACTUS_BASE_URL: string;
+  API_KEY: string;
+  PROJECT_ID: string;
 }): Promise<string> {
   const { fullPrompt, type, REACTUS_BASE_URL, API_KEY, PROJECT_ID } = opts;
 
+  const size = type === "banner" ? "1536x1024" : "1024x1024";
   const body = {
     model: "gpt-image-2",
     prompt: fullPrompt,
     n: 1,
-    size: type === "banner" ? "1536x1024" : "1024x1024",
+    size,
     quality: "medium",
     output_format: "png",
   };
@@ -253,8 +222,7 @@ async function generateWithGPTGen(opts: {
   });
 
   const provider = parseSSE(sseText);
-  const items = provider.data as Array<{ b64_json?: string; url?: string }> | undefined;
-  const item = items?.[0];
+  const item = (provider.data as Array<{ b64_json?: string; url?: string }>)?.[0];
   if (!item) throw new Error("GPT-gen: no data item");
 
   if (item.b64_json) return persistB64(item.b64_json, PROJECT_ID, REACTUS_BASE_URL, API_KEY);
@@ -265,8 +233,11 @@ async function generateWithGPTGen(opts: {
 // ─── GPT Image 2 edit ─────────────────────────────────────────────────────────
 
 async function generateWithGPTEdit(opts: {
-  fullPrompt: string; referenceB64: string;
-  REACTUS_BASE_URL: string; API_KEY: string; PROJECT_ID: string;
+  fullPrompt: string;
+  referenceB64: string;
+  REACTUS_BASE_URL: string;
+  API_KEY: string;
+  PROJECT_ID: string;
 }): Promise<string> {
   const { fullPrompt, referenceB64, REACTUS_BASE_URL, API_KEY, PROJECT_ID } = opts;
 
@@ -295,8 +266,7 @@ async function generateWithGPTEdit(opts: {
   });
 
   const provider = parseSSE(sseText);
-  const items = provider.data as Array<{ b64_json?: string; url?: string }> | undefined;
-  const item = items?.[0];
+  const item = (provider.data as Array<{ b64_json?: string; url?: string }>)?.[0];
   if (!item) throw new Error("GPT-edit: no data item");
 
   if (item.b64_json) return persistB64(item.b64_json, PROJECT_ID, REACTUS_BASE_URL, API_KEY);
@@ -304,27 +274,29 @@ async function generateWithGPTEdit(opts: {
   throw new Error("GPT-edit: no b64_json or url");
 }
 
-// ─── SSE helpers ─────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
+/** Fetch an SSE endpoint and return the full response body as text.
+ *  Reads the stream chunk-by-chunk to avoid buffering issues with large payloads. */
 async function fetchSSE(url: string, init: RequestInit): Promise<string> {
   const controller = new AbortController();
-  const timeout    = setTimeout(() => controller.abort("timeout"), 110_000);
+  const timeout    = setTimeout(() => controller.abort(), 110_000); // 110s hard limit
 
   let resp: Response;
   try {
     resp = await fetch(url, { ...init, signal: controller.signal });
   } catch (e) {
     clearTimeout(timeout);
-    const msg = e instanceof Error ? e.message : String(e);
-    throw new Error(`SSE fetch failed: ${msg}`);
+    throw new Error(`SSE fetch failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   if (!resp.ok) {
     clearTimeout(timeout);
     const body = await resp.text().catch(() => "");
-    throw new Error(`SSE HTTP ${resp.status}: ${body.slice(0, 300)}`);
+    throw new Error(`SSE HTTP ${resp.status}: ${body.slice(0, 200)}`);
   }
 
+  // Read body as stream to handle large payloads (up to ~2 MB base64)
   const chunks: Uint8Array[] = [];
   try {
     if (resp.body) {
@@ -332,9 +304,10 @@ async function fetchSSE(url: string, init: RequestInit): Promise<string> {
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
-        if (value) chunks.push(value);
+        chunks.push(value);
       }
     } else {
+      // Fallback for environments without streaming body
       const buf = await resp.arrayBuffer();
       chunks.push(new Uint8Array(buf));
     }
@@ -342,74 +315,63 @@ async function fetchSSE(url: string, init: RequestInit): Promise<string> {
     clearTimeout(timeout);
   }
 
+  // Decode all chunks at once
   const total  = chunks.reduce((s, c) => s + c.length, 0);
   const merged = new Uint8Array(total);
-  let off = 0;
-  for (const c of chunks) { merged.set(c, off); off += c.length; }
+  let offset   = 0;
+  for (const c of chunks) { merged.set(c, offset); offset += c.length; }
   return new TextDecoder().decode(merged);
 }
 
+/** Parse the completed SSE terminal event and return the provider JSON. */
 function parseSSE(raw: string): Record<string, unknown> {
   const lines = raw.split("\n");
 
-  // Look for completed event block
+  // Walk lines looking for the completed event block
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     if (line === "event: llm_server.completed" || line.includes("llm_server.completed")) {
-      for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
-        if (lines[j].startsWith("data:")) {
-          return extractProviderJSON(lines[j].slice(5).trim());
+      // The data line follows
+      for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
+        const dl = lines[j];
+        if (dl.startsWith("data:")) {
+          return extractProviderJSON(dl.slice(5).trim());
         }
       }
     }
   }
 
-  // Fallback: data line with "succeeded"
+  // Fallback: first data line that contains "succeeded"
   for (const line of lines) {
     if (line.startsWith("data:") && line.includes("succeeded")) {
       return extractProviderJSON(line.slice(5).trim());
     }
   }
 
-  // Fallback: data line with image data
+  // Fallback: first data line that contains b64_json or "data":[
   for (const line of lines) {
-    if (line.startsWith("data:") && (line.includes("b64_json") || line.includes('"data"') || line.includes('"url"'))) {
-      try {
-        return extractProviderJSON(line.slice(5).trim());
-      } catch { continue; }
+    if (line.startsWith("data:") && (line.includes("b64_json") || line.includes('"data"'))) {
+      return extractProviderJSON(line.slice(5).trim());
     }
   }
 
-  // Check for failed event
-  for (const line of lines) {
-    if (line.startsWith("data:") && line.includes("failed")) {
-      let detail = "desconhecido";
-      try {
-        const d = JSON.parse(line.slice(5).trim()) as { message?: string; error?: string };
-        detail = d.message ?? d.error ?? detail;
-      } catch {}
-      throw new Error(`SSE: geração falhou — ${detail}`);
-    }
-  }
-
-  throw new Error(`SSE: nenhum evento completo encontrado. Preview: ${raw.slice(0, 300)}`);
+  throw new Error(`SSE: no completed event found. Preview: ${raw.slice(0, 400)}`);
 }
 
 function extractProviderJSON(dataStr: string): Record<string, unknown> {
   const envelope = JSON.parse(dataStr) as { status?: string; data?: unknown };
+  // If it's a lifecycle envelope wrap, unwrap it
   if (envelope.status === "succeeded" && envelope.data !== undefined) {
     return envelope.data as Record<string, unknown>;
-  }
-  if (envelope.status === "failed") {
-    const d = envelope.data as Record<string, unknown> | undefined;
-    throw new Error(`Provider failed: ${d?.message ?? d?.error ?? "unknown"}`);
   }
   return envelope as Record<string, unknown>;
 }
 
 async function persistURL(
-  url: string, projectId: string,
-  REACTUS_BASE_URL: string, API_KEY: string,
+  url: string,
+  projectId: string,
+  REACTUS_BASE_URL: string,
+  API_KEY: string,
 ): Promise<string> {
   try {
     const res  = await fetch(`${REACTUS_BASE_URL}/v1/llm_server/file_dump_to_oss`, {
@@ -420,17 +382,21 @@ async function persistURL(
     const data = await res.json() as { success?: boolean; data?: string };
     if (data.success && data.data) return data.data;
   } catch (e) {
-    console.warn("[persistURL] OSS failed, using raw URL:", e);
+    console.warn("[persistURL] OSS failed, returning raw URL:", e);
   }
-  return url;
+  return url; // fallback — raw provider URL (expires in 24h)
 }
 
 async function persistB64(
-  b64raw: string, projectId: string,
-  REACTUS_BASE_URL: string, API_KEY: string,
+  b64raw: string,
+  projectId: string,
+  REACTUS_BASE_URL: string,
+  API_KEY: string,
 ): Promise<string> {
   const clean   = b64raw.replace(/\s/g, "");
   const dataUri = `data:image/png;base64,${clean}`;
+
+  // Write body to a buffer and POST — avoids shell arg-list-too-long issues
   const res  = await fetch(`${REACTUS_BASE_URL}/v1/llm_server/upload_base64_file`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-api-key": API_KEY },
